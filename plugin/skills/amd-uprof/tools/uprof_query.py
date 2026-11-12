@@ -134,15 +134,14 @@ def _out_path(args: argparse.Namespace, cpu_db: Path, session: Path) -> Path | N
 def _guard_out_file(out_path: Path | None, protected: list[Path | str], label: str = "") -> None:
     """Refuse an --out-file that names a protected input; label prefixes the path in the error.
 
-    Paths are compared as normalized absolute paths, so the output can never replace a file the
-    command reads. The error names the remedy.
+    Paths are compared by file identity, so no spelling (junction, symlink, hard link, 8.3 name,
+    UNC path, case) lets the output replace a file the command reads. The error names the remedy.
     """
     if out_path is None:
         return
-    target = os.path.normcase(os.fspath(util.absolute(out_path)))
     for path in protected:
         full = util.absolute(path)
-        if os.path.normcase(os.fspath(full)) == target:
+        if util.same_path(full, out_path):
             raise util.UprofError(
                 f"--out-file would overwrite {label}{full}, an input of this command; choose a "
                 "different --out-file path (for example a new file in the output directory)")
