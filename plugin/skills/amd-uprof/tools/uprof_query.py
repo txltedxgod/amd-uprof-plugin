@@ -25,6 +25,7 @@ import uprof_db
 import uprof_context
 import uprof_dump
 import uprof_functions
+import uprof_native
 import uprof_session
 import uprof_symbols
 import uprof_util as util
@@ -86,6 +87,21 @@ def _check_args(args: argparse.Namespace) -> None:
                 "scope is explicit")
         if start is not None:
             args.function_start = _rva_value(start)
+
+
+def _require_llvm(args: argparse.Namespace) -> None:
+    """Stop before any work when a found LLVM tool this profile runs is below its minimum.
+
+    Symbolizing modes (and a --function scope) run the symbolizer; instruction JSON also builds
+    contexts with llvm-readobj and llvm-objdump. Process and module rows run no LLVM tool.
+    """
+    names: list[str] = []
+    if args.by in SYMBOLIZED or getattr(args, "function", None) is not None:
+        names += uprof_native.SYMBOLIZE_TOOLS
+    if args.by == "instruction" and getattr(args, "json", False):
+        names += uprof_native.CONTEXT_TOOLS
+    if names:
+        uprof_native.require_llvm(dict.fromkeys(names))
 
 
 def _top_value(value: str) -> int:
@@ -1843,6 +1859,7 @@ def run_query_command(args: argparse.Namespace) -> None:
             uprof_db.output(connection, TOOLS_DIR / "schema.sql", [], False, out_path)
         return
 
+    _require_llvm(args)
     top = _top_value(args.top)
     time_start, time_end = _time_range(args)
     sampler = uprof_session.derive_sampler(session)

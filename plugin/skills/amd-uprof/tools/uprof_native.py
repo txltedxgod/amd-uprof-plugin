@@ -27,6 +27,12 @@ from uprof_util import (COPY_DIRS, DUMP_FILENAMES, UprofError, absolute, contain
 IS_WINDOWS = os.name == "nt"
 TRANSLATE_TIMEOUT: Final = 4 * 60 * 60
 TRANSLATE_OUTPUTS: Final = ("cpu.db", "callstack.db", *DUMP_FILENAMES.values())
+# Oldest releases the tools work with: uProf 5.3 writes cpu.db as DuckDB by default (older
+# releases write SQLite), and LLVM 23 added llvm-symbolizer --pdb and llvm-objdump
+# --no-symbolize-operands. A tool below its minimum stops the command that needs it.
+UPROF_MINIMUM: Final = (5, 3)
+LLVM_MINIMUM: Final = (23,)
+LLVM_TOOLS: Final = ("llvm-symbolizer", "llvm-readobj", "llvm-pdbutil", "llvm-objdump")
 
 
 # ---------------------------------------------------------------- tool discovery
@@ -98,16 +104,91 @@ def require_uprof() -> Path:
         hint = ("install AMD uProf, or set AMDUPROF_CLI to AMDuProfCLI.exe"
                 if IS_WINDOWS else "install AMD uProf, or set AMDUPROF_CLI to the AMDuProfCLI binary")
         raise UprofError(f"AMDuProfCLI not found; {hint}")
+    cause = uprof_version_cause(found, _uprof_version(found))
+    if cause:
+        raise UprofError(cause)
     return found
 
 
 def require_symbolizer() -> Path:
+    """The llvm-symbolizer; it and the found siblings symbolization uses must meet LLVM_MINIMUM."""
     found = find_symbolizer()
     if not found:
         hint = ("winget install --id LLVM.LLVM" if IS_WINDOWS
                 else "install LLVM (for example: sudo apt install llvm)")
         raise UprofError(f"llvm-symbolizer not found; {hint} (or set LLVM_SYMBOLIZER)")
+    require_llvm(SYMBOLIZE_TOOLS, found)
     return found
+
+
+# llvm-readobj reads the PE GUID and llvm-pdbutil the fold cache, both only on Windows.
+SYMBOLIZE_TOOLS: Final = (("llvm-symbolizer", "llvm-readobj", "llvm-pdbutil") if IS_WINDOWS
+                          else ("llvm-symbolizer",))
+# Instruction context symbolizes, reads imports with llvm-readobj and decodes with llvm-objdump.
+CONTEXT_TOOLS: Final = ("llvm-symbolizer", "llvm-readobj", "llvm-objdump")
+
+
+def parse_version(text: str | None) -> tuple[int, ...] | None:
+    """The dotted version after the word "version", else a leading dotted number."""
+    if not text:
+        return None
+    match = (re.search(r"(?i)\bversion\s+v?(\d+(?:\.\d+)*)", text)
+             or re.match(r"\s*(\d+(?:\.\d+)+)", text))
+    return tuple(int(part) for part in match.group(1).split(".")) if match else None
+
+
+def _minimum_text(minimum: tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in minimum)
+
+
+def _version_cause(path: Path, version: str | None, minimum: tuple[int, ...], tool: str,
+                   why: str, remedy: str) -> str | None:
+    """None when version meets minimum, else one line with the cause and the alternatives."""
+    found = parse_version(version)
+    if found is not None and found >= minimum:
+        return None
+    floor = _minimum_text(minimum)
+    if found is None:
+        problem = f"cannot read the version of {path} (--version printed none)"
+    else:
+        problem = f"{path} is {tool} {_minimum_text(found)}, below the minimum {floor}"
+    return f"{problem}; {tool} {floor} or later is required: {why}; remedy: {remedy}, then re-run"
+
+
+def uprof_version_cause(path: Path, version: str | None) -> str | None:
+    floor = _minimum_text(UPROF_MINIMUM)
+    return _version_cause(
+        path, version, UPROF_MINIMUM, "AMD uProf",
+        "older releases do not write cpu.db as DuckDB by default, which the analysis reads",
+        f"install AMD uProf {floor} or later from https://www.amd.com/en/developer/uprof.html, "
+        f"or set AMDUPROF_CLI to an AMDuProfCLI of uProf {floor} or later")
+
+
+def llvm_version_cause(path: Path, version: str | None) -> str | None:
+    floor = _minimum_text(LLVM_MINIMUM)
+    install = ("winget upgrade --id LLVM.LLVM" if IS_WINDOWS
+               else f"install LLVM {floor} or later from apt.llvm.org")
+    return _version_cause(
+        path, version, LLVM_MINIMUM, "LLVM",
+        "llvm-symbolizer --pdb and llvm-objdump --no-symbolize-operands need it",
+        f"{install}, or set LLVM_SYMBOLIZER to an llvm-symbolizer of LLVM {floor} or later "
+        "whose directory holds the other LLVM tools")
+
+
+def _llvm_path(name: str, symbolizer: Path | None) -> Path | None:
+    return symbolizer if name == "llvm-symbolizer" else find_sibling(symbolizer, name)
+
+
+def require_llvm(names: Iterable[str], symbolizer: Path | None = None) -> None:
+    """Stop when a found LLVM tool among names is below LLVM_MINIMUM; absent tools pass here,
+    because each caller reports absence with its own cause."""
+    symbolizer = symbolizer if symbolizer else find_symbolizer()
+    for name in names:
+        path = _llvm_path(name, symbolizer)
+        if path:
+            cause = llvm_version_cause(path, _first_version_line(path, "--version"))
+            if cause:
+                raise UprofError(cause)
 
 
 class SymbolizerUnsupported(UprofError):
@@ -257,11 +338,17 @@ def _first_version_line(path: Path, *args: str) -> str | None:
 
 
 def _tool_row(name: str, path: Path | None, version: str | None,
-              missing: str = "not found") -> str:
-    """One `tools` row; missing is the cause (and remedy) printed when path is absent."""
+              missing: str = "not found", minimum: tuple[int, ...] | None = None,
+              too_old: str | None = None) -> str:
+    """One `tools` row; missing is the cause (and remedy) printed when path is absent, and
+    too_old the cause when the found version is below minimum."""
     if not path:
         return f"{name}=; version=MISSING ({missing})"
-    return f"{name}={path}; version={version or 'unavailable'}"
+    row = f"{name}={path}; version={version or 'unavailable'}"
+    if minimum is not None:
+        status = "TOO OLD" if parse_version(version) else "UNREADABLE"
+        row += f"; minimum={_minimum_text(minimum)}; " + (f"{status}: {too_old}" if too_old else "ok")
+    return row
 
 
 def _uprof_version(path: Path | None) -> str | None:
@@ -277,7 +364,8 @@ def _uprof_version(path: Path | None) -> str | None:
 
 
 def tool_report() -> None:
-    """Print every tool path and version, then fail once if a required tool is missing."""
+    """Print every tool path and version against its minimum, then fail once if a required tool
+    is missing or a found tool is below its minimum."""
     uprof = find_uprof()
     symbolizer = find_symbolizer()
     pdbutil = find_sibling(symbolizer, "llvm-pdbutil")
@@ -303,19 +391,33 @@ def tool_report() -> None:
         duckdb_version = None
         duckdb_short = None
         duckdb_hint = f"DuckDB Python module (install with: {sys.executable} -m pip install duckdb)"
-    print(_tool_row("UPROF", uprof, _uprof_version(uprof)))
+    too_old: list[str] = []
+
+    def row(name: str, path: Path | None, version: str | None, minimum: tuple[int, ...],
+            cause_of, tool: str, missing: str = "not found") -> str:
+        cause = cause_of(path, version) if path else None
+        if cause:
+            too_old.append(tool)
+        return _tool_row(name, path, version, missing, minimum, cause)
+
+    def llvm_row(name: str, path: Path | None, tool: str, missing: str = "not found") -> str:
+        version = _first_version_line(path, "--version") if path else None
+        return row(name, path, version, LLVM_MINIMUM, llvm_version_cause, tool, missing)
+
+    print(row("UPROF", uprof, _uprof_version(uprof), UPROF_MINIMUM, uprof_version_cause,
+              "AMDuProfCLI"))
     print(f"DUCKDB={duckdb_version or ''}; version={duckdb_short or 'MISSING (not installed)'}")
-    print(_tool_row("SYMBOLIZER", symbolizer,
-                    _first_version_line(symbolizer, "--version") if symbolizer else None))
-    print(_tool_row("PDBUTIL", pdbutil,
-                    _first_version_line(pdbutil, "--version") if pdbutil else None))
-    print(_tool_row("READOBJ", readobj,
-                    _first_version_line(readobj, "--version") if readobj else None))
-    print(_tool_row("OBJDUMP", objdump,
-                    _first_version_line(objdump, "--version") if objdump else None,
-                    "llvm-objdump is not beside llvm-symbolizer or on PATH; instruction context "
-                    "is omitted; remedy: install LLVM or add its bin directory to PATH; "
-                    "module/RVA rows still work"))
+    print(llvm_row("SYMBOLIZER", symbolizer, "llvm-symbolizer"))
+    print(llvm_row("PDBUTIL", pdbutil, "llvm-pdbutil"))
+    print(llvm_row("READOBJ", readobj, "llvm-readobj"))
+    print(llvm_row("OBJDUMP", objdump, "llvm-objdump",
+                   "llvm-objdump is not beside llvm-symbolizer or on PATH; instruction context "
+                   "is omitted; remedy: install LLVM or add its bin directory to PATH; "
+                   "module/RVA rows still work"))
+    failures = []
+    if too_old:
+        failures.append("TOO OLD or UNREADABLE " + ", ".join(too_old)
+                        + " (each row names the remedy)")
     missing = []
     if not uprof:
         missing.append("uProf CLI (install AMD uProf or set AMDUPROF_CLI)")
@@ -324,7 +426,9 @@ def tool_report() -> None:
     if not symbolizer:
         missing.append("llvm-symbolizer (install LLVM or set LLVM_SYMBOLIZER)")
     if missing:
-        raise UprofError("MISSING " + "; ".join(missing))
+        failures.insert(0, "MISSING " + "; ".join(missing))
+    if failures:
+        raise UprofError("; ".join(failures))
 
 
 # ---------------------------------------------------------------- translate

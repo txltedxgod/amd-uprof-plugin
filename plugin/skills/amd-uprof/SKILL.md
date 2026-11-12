@@ -13,7 +13,7 @@ One entry point, run from any directory:
 python <SKILL_DIR>/tools/uprof.py <command> ...
 ```
 
-`<SKILL_DIR>` is the directory containing this file. `tools/views.sql` is the only schema; the SQL files stay usable directly (see `references/reference.md`). Run the command with the plain `python` on `PATH` (Python 3.9 or newer, with the `duckdb` 2.x package); do not add `-I` (or use `-P`/`PYTHONSAFEPATH`), because isolated/safe-path mode does not put the script directory on `sys.path` and `uprof.py` imports its sibling modules from there. No environment or version preflight is needed: a missing interpreter, package or tool surfaces from the command itself.
+`<SKILL_DIR>` is the directory containing this file. `tools/views.sql` is the only schema; the SQL files stay usable directly (see `references/reference.md`). Run the command with the plain `python` on `PATH` (Python 3.9 or newer, with the `duckdb` 2.x package); do not add `-I` (or use `-P`/`PYTHONSAFEPATH`), because isolated/safe-path mode does not put the script directory on `sys.path` and `uprof.py` imports its sibling modules from there. Tools need AMD uProf 5.3 and LLVM 23 or later. No environment or version preflight is needed: a missing interpreter, package or tool, or one below its minimum, surfaces from the command itself.
 
 ## Quickstart
 
@@ -30,7 +30,7 @@ With an existing capture, run `profile --by process` first: it already prints `M
 | `profile` | samples and time shares by process, module, function, 4 KiB region, source line or instruction; prints SANITY and ACHIEVED |
 | `anchor` | map a workload's QPC reading onto capture-relative seconds (negative = attach latency; `--freq` defaults to 10 MHz) |
 | `schema` | live table/column/type listing for drift checking |
-| `tools` | print every resolved tool path and version; fails only when a required tool is missing |
+| `tools` | print every resolved tool path and version against its minimum; fails when a required tool is missing or a found one is below its minimum |
 
 Exit codes: 0 success, 2 `error: ...` (argparse also exits 2), 130 interrupted.
 
@@ -252,7 +252,7 @@ The aggregate `<other instructions>` row carries no `context`.
 
 ## Tools
 
-Run `uprof.py tools` only when a command reports `MISSING`; each row is `<NAME>=<path>; version=<version>`, optional absent tools print `MISSING (<cause>)`, and a uProf or LLVM version that cannot be read prints `unavailable` or the install-path version.
+Run `uprof.py tools` only when a command reports `MISSING`; each row is `<NAME>=<path>; version=<version>; minimum=<minimum>; ok`, with `TOO OLD: <cause>` or `UNREADABLE: <cause>` in place of `ok` when the version is below the minimum or cannot be read; optional absent tools print `MISSING (<cause>)`.
 
 | Tool | Windows | Linux |
 |---|---|---|
