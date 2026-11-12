@@ -92,13 +92,29 @@ def canonical(path: os.PathLike[str] | str) -> Path:
 
 
 def same_path(first: os.PathLike[str] | str, second: os.PathLike[str] | str) -> bool:
-    """Whether both paths name the same file or directory, however each is spelled."""
+    """Whether both paths name the same file or directory, however each is spelled.
+
+    Paths that do not exist yet are the same when their leaf names match and their parents are
+    the same, so a missing file below a UNC or mapped spelling of its directory still matches.
+    """
     try:
         if os.path.samefile(first, second):
             return True
     except (OSError, ValueError):
         pass
-    return canonical(first) == canonical(second)
+    if canonical(first) == canonical(second):
+        return True
+    first, second = absolute(first), absolute(second)
+    if first.parent == first or second.parent == second:
+        return False
+    if os.path.normcase(first.name) != os.path.normcase(second.name):
+        return False
+    try:
+        if os.path.lexists(first) or os.path.lexists(second):
+            return False
+    except (OSError, ValueError):
+        return False
+    return same_path(first.parent, second.parent)
 
 
 def contains(outer: os.PathLike[str] | str, inner: os.PathLike[str] | str) -> bool:

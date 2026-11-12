@@ -246,7 +246,7 @@ The aggregate `<other instructions>` row carries no `context`.
 | `--time-filter` on a PMC capture | error: this export aggregates PMC samples per window and carries no per-sample timestamps | 2 |
 | IBS OP capture where AMDuProfCLI reports IBS counters unavailable | explicit one-line `SAMPLER: falling back to cycle sampling ...`, then a cycle capture; any other IBS failure is an error | 0 on the fallback, 2 otherwise |
 | capture export missing tables/columns or a bad event column | schema guard names every missing item and exits before querying | 2 |
-| `--out-file` equals `cpu.db`, `session.uprof` or the dump; directory missing; path is a directory | error; the input is never overwritten | 2 |
+| `--out-file` names an input of the command under any spelling (`cpu.db`, the dump, a symbol or image file); directory missing; path is a directory | error; the input is never overwritten | 2 |
 | empty scope | `WARNING: no samples in the selected scope` on stderr even when `--json`/`--out-file` writes the document (the JSON also carries `WARNING`), plus an empty table; a module-suffix `--image` pattern adds that `--image` scopes process image names, not modules | 0 |
 | applied sampler requested OS mode but the whole capture (before scope and time filters) has no kernel-image sample | `KERNEL_COVERAGE` line above the table stating the sampler's OS-mode bit and that the capture has no kernel-image sample, with elevation named conditionally; an empty capture is reported as such instead. The table is still emitted; `collect` printed the same limitation before the capture ran | 0 |
 
