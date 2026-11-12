@@ -15,6 +15,7 @@ import uprof_session
 import uprof_util
 
 import debug_fixtures as F
+from test_translate_out_dir import _short_path
 
 _OVERWRITE = "--out-file would overwrite"
 _REMEDY = "choose a different --out-file path"
@@ -29,7 +30,7 @@ class OutFileGuardTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="uprof-outguard-")
         self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        self.root = Path(os.path.realpath(self._tmp.name))
         self.session = self.root / "session"
         self.session.mkdir()
         (self.session / "session.uprof").write_text(
@@ -133,6 +134,63 @@ class OutFileGuardTest(unittest.TestCase):
         sidecar = self.cache / "IbsOpDump.samples.parquet.json"
         sidecar.write_text("{}", encoding="utf-8")
         self._assert_refused(sidecar)
+
+    def _junction(self, target):
+        if os.name != "nt":
+            self.skipTest("host: junctions exist on Windows only")
+        import _winapi
+        link = self.root / "junction"
+        _winapi.CreateJunction(str(target), str(link))
+        return link
+
+    def _unc(self, path):
+        if os.name != "nt":
+            self.skipTest("host: UNC paths exist on Windows only")
+        drive, rest = os.path.splitdrive(str(path))
+        share = Path(rf"\\localhost\{drive[0]}$" + "\\")
+        if not share.is_dir():
+            self.skipTest("host: the administrative share is not reachable")
+        return rf"\\localhost\{drive[0]}$" + rest
+
+    def test_the_capture_database_through_a_junction_is_protected(self):
+        cpu_db = self.session / "cpu.db"
+        self._assert_refused(cpu_db, out_file=str(self._junction(self.session) / "cpu.db"))
+
+    def test_the_capture_database_through_a_symlink_is_protected(self):
+        cpu_db = self.session / "cpu.db"
+        link = self.root / "link.db"
+        try:
+            link.symlink_to(cpu_db)
+        except OSError as exc:
+            self.skipTest(f"host: cannot create a file symlink here: {exc}")
+        self._assert_refused(cpu_db, out_file=str(link))
+
+    def test_the_capture_database_through_its_short_name_is_protected(self):
+        cpu_db = self.session / "cpu.db"
+        short = _short_path(self.session)
+        if short is None:
+            self.skipTest("host: the volume keeps no 8.3 names")
+        self._assert_refused(cpu_db, out_file=str(short / "cpu.db"))
+
+    def test_the_capture_database_through_a_unc_path_is_protected(self):
+        cpu_db = self.session / "cpu.db"
+        self._assert_refused(cpu_db, out_file=self._unc(cpu_db))
+
+    def test_a_hard_link_to_a_symbol_file_is_protected(self):
+        pdb = self.root / "app.pdb"
+        pdb.write_bytes(b"pdb")
+        link = self.root / "other-name.pdb"
+        try:
+            os.link(pdb, link)
+        except OSError as exc:
+            self.skipTest(f"host: cannot create a hard link here: {exc}")
+        self._assert_refused(pdb, "--symbol-path", str(pdb), out_file=str(link))
+
+    def test_the_parquet_copy_through_a_junction_is_protected(self):
+        copy = self.cache / "IbsOpDump.samples.parquet"
+        copy.write_bytes(b"copy")
+        link = self._junction(self.cache)
+        self._assert_refused(copy, out_file=str(link / copy.name))
 
     def test_the_parquet_unsupported_marker_is_protected(self):
         marker = self.cache / "IbsOpDump.samples.parquet.unsupported.json"
