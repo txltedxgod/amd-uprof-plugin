@@ -14,12 +14,14 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from uprof_native import (IS_WINDOWS, failure_detail, find_uprof, ibs_unavailable_reason,
-                          is_admin, print_output, require_uprof, run)
+from uprof_native import (IS_WINDOWS, failure, failure_detail, find_uprof,
+                          ibs_unavailable_reason, is_admin, print_output, require_uprof, run)
 from uprof_session import collect_summary, verify_collect
 from uprof_util import UprofError, absolute, skill_identity
 
 _IBS_UNAVAILABLE = "ibs counters are not available"
+# AMDuProfCLI's message when the CPU has no CYCLES_NOT_IN_HALT event (for example a non-AMD CPU).
+_CYCLES_REJECTED = "invalid event(cycles_not_in_halt)"
 _CYCLE_DEFAULT = "1ms"
 _OP_DEFAULT = "1000000"
 _KERNEL_COVERAGE_NOTE = "kernel-mode (OS) samples are omitted without elevation"
@@ -284,7 +286,14 @@ def collect(options: CollectOptions) -> None:
             print(_FALLBACK_KERNEL_WARNING, file=sys.stderr)
         completed = _run_cli(uprof, cycle_spec, target_args, options)
     if completed.returncode != 0:
-        raise UprofError(f"collect failed with {completed.returncode}: {failure_detail(completed)}")
+        detail = failure_detail(completed)
+        if (effective_event == "cycles"
+                and _CYCLES_REJECTED in ((completed.stdout or "") + (completed.stderr or "")).lower()):
+            # No other sampler is started on this host's behalf; the caller picks one.
+            raise failure(f"AMDuProfCLI rejected CYCLES_NOT_IN_HALT: {detail}",
+                          ["timer capture", "timer capture (launch)", "whole capture",
+                           "Zen host"], pids=options.pids, seconds=options.seconds)
+        raise UprofError(f"collect failed with {completed.returncode}: {detail}")
 
     session = _one_session(out_dir, session_before, children_before)
     print(f"SESSION={absolute(session)}")

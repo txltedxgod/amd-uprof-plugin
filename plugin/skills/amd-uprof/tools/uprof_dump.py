@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from uprof_native import TRANSLATE_TIMEOUT, require_uprof, run, translate_command
+from uprof_native import TRANSLATE_TIMEOUT, failure, require_uprof, run, translate_command
 from uprof_session import Sampler
 from uprof_util import DUMP_FILENAMES, UprofError, absolute, copy_session, read_text, tail_lines
 
@@ -385,10 +385,8 @@ def resolve_dump(session_dir: Path | str, sampler: Sampler) -> DumpInfo:
             f"session.uprof is missing from {session_dir}; time_share needs it to identify the "
             "sampler and check the dump against the capture span")
     if not sampler.ibs_dump_kind:
-        raise UprofError(
-            "time_share needs the IBS ASCII sample dump, and session.uprof records no IBS OP or IBS "
-            "fetch event: this capture has no per-sample timestamps. Profile a capture made with "
-            "--event ibs-op, or use schema/tools for a PMC cycle capture")
+        raise failure("session.uprof records no IBS, PMC or timer event",
+                      ["timer capture", "timer capture (launch)", "Zen host"])
     dump_name = DUMP_FILENAMES[sampler.ibs_dump_kind]
     path = Path(session_dir) / dump_name
     if path.is_file():

@@ -24,8 +24,9 @@ class Sampler:
     """What session.uprof records, and therefore what its sample shares mean.
 
     ibs_dump_kind is a DUMP_FILENAMES key when an IBS ASCII dump exists; metric is the METRIC
-    line printed before query results. pmc marks a PMC cycle capture, whose samples come from
-    cpu.db rather than a dump; event_column names its sample column in UnifiedSampleSeries.
+    line printed before query results. pmc marks a capture whose samples come from cpu.db rather
+    than a dump (a PMC capture, or a timer capture with timer set); event_column names its sample
+    column in UnifiedSampleSeries.
     os_requested is the applied event's OS-mode bit; an unelevated capture that requests it has no
     kernel-image samples, which kernel_coverage_warning checks. os_mode names the bit that carried
     the request (os, opOs or fetchOs) for the warning text. pmc_cycle_shares is true only for a
@@ -42,6 +43,10 @@ class Sampler:
     interval_units: str | None = None  # 'cycles' (time-convertible), 'ops' or 'fetch' (not)
     os_requested: bool = False
     os_mode: str | None = None
+    # A timer capture reads cpu.db like PMC (pmc is set too); its interval is milliseconds.
+    timer: bool = False
+    interval_ms: float | None = None
+    system_wide: bool = False
 
 
 @dataclass
@@ -207,12 +212,59 @@ def derive_sampler(session_dir: Path | str) -> Sampler:
                        interval_units="cycles", os_requested=bool(event.get("os")),
                        os_mode="os" if event.get("os") else None)
 
+    timer = _timer_sampler(meta)
+    if timer is not None:
+        return timer
+
     if from_command:
         metric = (f"METRIC: {from_command} (from collectCommand; session.uprof records no PMC or IBS "
                   "event) -- sample shares: not established")
     else:
         metric = "METRIC: no PMC or IBS event recorded in session.uprof -- sample shares: not established"
     return Sampler(metric=metric)
+
+
+TIMER_EVENT_NAME = "CPU_TIME"
+TIMER_HW_EVENT_ID = 0xE000
+
+
+def _timer_sampler(meta: dict[str, Any]) -> Sampler | None:
+    """The sampler of a timer capture, or None when the session is not one.
+
+    A timer capture records no IBS or PMC event, a positive collection.events.timerInterval in
+    milliseconds, and one CPU_TIME event column (hwEventId 0xE000). The recorded configuration
+    name differs between --config tbp and -e event=timer, so it is not used. The OS/user mode bits
+    of the CPU_TIME entry do not describe the capture, so no OS-mode request is derived from them.
+    """
+    events = (meta.get("collection") or {}).get("events") or {}
+    try:
+        interval_ms = float(events.get("timerInterval"))
+    except (TypeError, ValueError):
+        return None
+    if not interval_ms > 0:
+        return None
+    column = None
+    for category in (meta.get("auxiliary") or {}).get("eventColumnIds") or []:
+        for event in category.get("events") or []:
+            if (event.get("name") == TIMER_EVENT_NAME
+                    and event.get("hwEventId") == TIMER_HW_EVENT_ID
+                    and event.get("encodedId") is not None):
+                column = f"event#0x{int(event['encodedId']):x}"
+                break
+        if column:
+            break
+    if column is None:
+        return None
+    wide = records_true(((meta.get("collection") or {}).get("target") or {}).get("systemWide"))
+    unverified = "; system-wide denominator and idle handling unverified" if wide else ""
+    metric = (f"METRIC: timer sampling ({TIMER_EVENT_NAME}, interval {interval_ms:g} ms) -- sample "
+              "shares: on-CPU time share of the sampled threads (one sample per timer tick that "
+              "found the thread running; kernel-mode ticks not established"
+              f"{unverified}), not cycles, not wall time; not available from a timer capture: "
+              "time_share, tag_to_retire_share, cycle cost, per-op cost, caller attribution into "
+              "external modules")
+    return Sampler(metric=metric, pmc=True, event_column=column, interval_units="ms",
+                   timer=True, interval_ms=interval_ms, system_wide=wide)
 
 
 def kernel_coverage_warning(sampler: Sampler, has_kernel_samples: bool,
@@ -309,6 +361,10 @@ def requested_interval(sampler: Sampler, frequency_hz: float | None = None
     frequency_hz reuses a frequency the caller already read; None reads the machine's reported
     one.
     """
+    if sampler.timer and sampler.interval_ms:
+        interval_s = sampler.interval_ms / 1000.0
+        return (interval_s, f"timer {sampler.interval_ms:g} ms",
+                f"; ideal {1.0 / interval_s:,.0f}/s per running thread")
     if sampler.interval is None or sampler.interval_units is None:
         return None, "the session records no interval", ""
     if sampler.interval_units == "cycles":

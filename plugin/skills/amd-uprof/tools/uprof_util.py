@@ -21,7 +21,7 @@ COPY_DIRS: Final = ("cpu", "metadata", ".config", ".log", "sources", "binaries")
 
 # Used when the skill is copied loose and no .claude-plugin/plugin.json sits above it. Keep it in
 # step with the released plugin version.
-_BUILTIN_VERSION: Final = "2.1.0"
+_BUILTIN_VERSION: Final = "2.2.0"
 _PLUGIN_MANIFEST: Final = Path(".claude-plugin") / "plugin.json"
 
 

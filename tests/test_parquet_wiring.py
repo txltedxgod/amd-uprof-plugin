@@ -46,7 +46,7 @@ class ParquetWiringTest(unittest.TestCase):
                 raise _Abort()
                 yield
 
-            sampler = types.SimpleNamespace(pmc=False, event_column="")
+            sampler = types.SimpleNamespace(pmc=False, timer=False, event_column="")
             with mock.patch.object(uprof_query, "_check_args", return_value=None), \
                     mock.patch.object(uprof_session, "derive_sampler", return_value=sampler), \
                     mock.patch.object(uprof_session, "system_wide", return_value=True), \

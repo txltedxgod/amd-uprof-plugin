@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import math
 import os
 import shutil
 import sys
@@ -25,6 +26,7 @@ import uprof_db
 import uprof_context
 import uprof_dump
 import uprof_functions
+import uprof_native
 import uprof_session
 import uprof_symbols
 import uprof_util as util
@@ -563,6 +565,18 @@ _CPU_SECONDS_MEANING: Final = (
     "sampled CPU seconds = samples x the requested cycle interval / this machine's reported core "
     "frequency (the session records no frequency, so a capture from other hardware is "
     "approximate); CPU time, not wall-clock elapsed time")
+# Timer captures: one sample is one timer tick that found the thread running. Neither samples x
+# the requested interval nor samples x the achieved tick period reproduced in-process CPU time
+# within 5% (1 ms: -13% to +0.2%; 10 ms: -31% to -12%), so cpu_seconds is not emitted.
+_TIMER_SHARE_MEANING: Final = (
+    "on-CPU time share of the sampled threads (one sample per timer tick that found the thread "
+    "running)")
+_TIMER_CPU_SECONDS_ABSENT: Final = (
+    "timer ticks undercount CPU time (samples x interval was 0-13% low at 1 ms and 12-31% low at "
+    "10 ms against the workload's own CPU time), so no seconds are derived; for a cost in "
+    "seconds, multiply sample_share by the workload's measured CPU time")
+_TIMER_ABSENT_TIME_SHARE: Final = "a timer capture has no per-sample timestamps"
+_TIMER_ABSENT_TAG: Final = "a timer capture has no tag-to-retire counter"
 _CPU_SECONDS_SYSTEM_WIDE: Final = (
     "; a system-wide capture sums CPU time across cores, and halted cycles are excluded")
 _CPU_SECONDS_ATTACHED: Final = (
@@ -605,6 +619,8 @@ _SYMBOL_PATH_FLAGS: Final = (
 def _sample_share_meaning(sampler: uprof_session.Sampler,
                           dump: uprof_dump.DumpInfo | None) -> str:
     """What sample_share is a fraction of in this capture mode."""
+    if sampler.timer:
+        return _TIMER_SHARE_MEANING
     if dump is None:
         if sampler.pmc_cycle_shares:
             return "busy core-cycle share (fixed cycles per sample; halted excluded)"
@@ -694,6 +710,8 @@ def _next_calls(args: argparse.Namespace,
 
 def _cpu_seconds_absent(sampler: uprof_session.Sampler) -> str:
     """Why cpu_seconds is not emitted for this capture."""
+    if sampler.timer:
+        return _TIMER_CPU_SECONDS_ABSENT
     if sampler.interval_units == "ops":
         return "the requested interval is a work count, not time"
     if sampler.interval_units == "fetch":
@@ -711,6 +729,9 @@ def _primary_measure(sampler: uprof_session.Sampler,
     capture and a PMC cycle event. A gap-weighted (time-based) capture ranks by time_share. An
     unsupported PMC event leaves sample_share not established, so raw samples order the rows.
     """
+    if sampler.timer:
+        return "sample_share", ("this timer capture counts one timer tick per sample, so "
+                                "sample_share is the on-CPU time share")
     if dump is None:
         if sampler.pmc_cycle_shares:
             return "sample_share", ("this PMC cycle capture counts fixed cycles per sample, so "
@@ -853,8 +874,12 @@ def _percent_share(part: Any, whole: Any) -> str:
 
 
 def _function_scope_fields(scope: dict[str, Any], legend: dict[str, Any],
-                           sample_interval_s: float | None) -> list[tuple[str, str]]:
-    """The explicit filter and the parent-unit measurement, with every denominator named."""
+                           sample_interval_s: float | None,
+                           timer: bool = False) -> list[tuple[str, str]]:
+    """The explicit filter and the parent-unit measurement, with every denominator named.
+
+    A timer capture states its missing measures once, in METRIC, so PARENT does not repeat them.
+    """
     parent = [f"{scope['samples']} samples",
               f"sample_share {_percent_share(scope['samples'], scope['total_samples'])} of the "
               "scoped capture"]
@@ -863,13 +888,13 @@ def _function_scope_fields(scope: dict[str, Any], legend: dict[str, Any],
         parent.append("time_share "
                       f"{_percent_share(scope['weight'], scope['total_weight'])} of the scoped "
                       "capture")
-    else:
+    elif not timer:
         parent.append(f"time_share absent ({absent.get('time_share', 'not applicable')})")
     if "tag_to_retire_share" in legend.get("columns", {}):
         parent.append("tag_to_retire_share "
                       f"{_percent_share(scope['tag_cycles'], scope['total_tag_cycles'])} of the "
                       "scoped capture")
-    else:
+    elif not timer:
         parent.append("tag_to_retire_share absent "
                       f"({absent.get('tag_to_retire_share', 'not applicable')})")
     if sample_interval_s is not None:
@@ -877,11 +902,14 @@ def _function_scope_fields(scope: dict[str, Any], legend: dict[str, Any],
         parent.append(f"cpu_seconds {seconds:.3f} s (parent samples x interval)")
     else:
         parent.append(f"cpu_seconds absent ({absent.get('cpu_seconds', 'not applicable')})")
+    shares = ("child sample_share uses the capture denominator, parent_sample_share uses the "
+              "parent totals" if timer else
+              "child sample_share/time_share/tag_to_retire_share use the capture denominators, "
+              "parent_sample_share/parent_time_share/parent_tag_to_retire_share use the parent "
+              "totals")
     parent_text = ("; ".join(parent)
                    + "; the parent totals are the sum of this function's own rows (a sum/join, "
-                     "not a new measurement); child sample_share/time_share/tag_to_retire_share "
-                     "use the capture denominators, parent_sample_share/parent_time_share/"
-                     "parent_tag_to_retire_share use the parent totals")
+                     f"not a new measurement); {shares}")
     return [("FILTER", scope["filter"]), ("PARENT", parent_text)]
 
 
@@ -957,7 +985,10 @@ def _legend(sampler: uprof_session.Sampler, dump: uprof_dump.DumpInfo | None,
                                        "(sub_<rva>/pdata_<start>), not a source symbol")
         columns["symbol_reason"] = ("why function/file/line are NULL for hot_rva")
     absent: dict[str, str] = {}
-    if dump is None:
+    if sampler.timer:
+        absent["time_share"] = _TIMER_ABSENT_TIME_SHARE
+        absent["tag_to_retire_share"] = _TIMER_ABSENT_TAG
+    elif dump is None:
         absent["time_share"] = ("this export aggregates PMC samples per window; capture with "
                                 "--event ibs-op (IBS OP with per-sample timestamps) to get "
                                 "time_share")
@@ -986,7 +1017,10 @@ def _legend(sampler: uprof_session.Sampler, dump: uprof_dump.DumpInfo | None,
     if dump is None:
         order_by = ["samples"]
         gap_weighted = False
-        if sampler.pmc_cycle_shares:
+        if sampler.timer:
+            estimate = ("sample_share is the on-CPU time share (one timer tick per sample), so "
+                        "the sample count ranks where CPU time was spent")
+        elif sampler.pmc_cycle_shares:
             estimate = ("sample_share is the busy core-cycle share (fixed cycles per sample, "
                         "halted excluded), so the sample count ranks where cycles were spent")
         else:
@@ -1187,9 +1221,13 @@ def _read_text(legend: dict[str, Any], system_wide: bool) -> str:
     if "sample_hot" in legend["impact"]:
         read += f"; {legend['impact']['sample_hot']}"
     if "function_scope" in legend:
-        read += ("; the rows are only the selected function: sample_share/time_share/"
-                 "tag_to_retire_share stay relative to the scoped capture, while parent_* are "
-                 "relative to the parent function, and every other function is excluded")
+        # A timer capture names its missing shares once, in METRIC.
+        timer = legend["absent"].get("time_share") == _TIMER_ABSENT_TIME_SHARE
+        shares = ("sample_share stays" if timer
+                  else "sample_share/time_share/tag_to_retire_share stay")
+        read += (f"; the rows are only the selected function: {shares} relative to the scoped "
+                 "capture, while parent_* are relative to the parent function, and every other "
+                 "function is excluded")
     read += "; the <other ...> row is last, not ranked"
     return read
 
@@ -1199,8 +1237,13 @@ def _next_text(calls: list[str]) -> str:
     return " && ".join(calls)
 
 
-def _legend_fields(legend: dict[str, Any], system_wide: bool) -> list[tuple[str, str]]:
-    """The short legend: columns and unit, what to read, and runnable next calls."""
+def _legend_fields(legend: dict[str, Any], system_wide: bool,
+                   timer: bool = False, top_row: str | None = None) -> list[tuple[str, str]]:
+    """The short legend: columns and unit, what to read, and runnable next calls.
+
+    A timer capture states its missing measures once, in METRIC, so COLUMNS does not repeat them.
+    top_row is the precision clause READ carries for the first row.
+    """
     parts = []
     if "attribution" in legend["columns"]:
         parts.append(f"attribution = {legend['columns']['attribution']}")
@@ -1211,11 +1254,11 @@ def _legend_fields(legend: dict[str, Any], system_wide: bool) -> list[tuple[str,
         else:
             parts.append("time_share = per-thread time share (off-CPU gaps are charged to the "
                          "ending sample)")
-    else:
+    elif not timer:
         parts.append(f"time_share absent ({legend['absent']['time_share']})")
     if "tag_to_retire_share" in legend["columns"]:
         parts.append("tag_to_retire_share = tag-to-retire cycle share")
-    else:
+    elif not timer:
         parts.append(f"tag_to_retire_share absent "
                      f"({legend['absent']['tag_to_retire_share']})")
     if "function_scope" in legend:
@@ -1245,8 +1288,11 @@ def _legend_fields(legend: dict[str, Any], system_wide: bool) -> list[tuple[str,
         parts.append(f"cpu_seconds = {legend['columns']['cpu_seconds']}")
     elif "cpu_seconds" in legend["absent"]:
         parts.append(f"cpu_seconds absent ({legend['absent']['cpu_seconds']})")
+    read = _read_text(legend, system_wide)
+    if top_row:
+        read += f"; {top_row}"
     fields = [("COLUMNS", "share columns are fractions 0.0-1.0; " + "; ".join(parts)),
-              ("READ", _read_text(legend, system_wide))]
+              ("READ", read)]
     if legend["next"]:
         fields.append(("NEXT", _next_text(legend["next"])))
     return fields
@@ -1258,7 +1304,12 @@ def _header_fields(args: argparse.Namespace, sampler: uprof_session.Sampler,
     """Detailed capture fields carried above the table and in the JSON document."""
     fields = [("VERSION", util.skill_identity()),
               ("METRIC", sampler.metric.removeprefix("METRIC: "))]
-    if dump is None:
+    if sampler.timer:
+        # METRIC already names the measures a timer capture lacks; no TIME_SHARE or
+        # TAG_TO_RETIRE_SHARE field repeats them.
+        fields.append(("DUMP", "none; a timer capture has no IBS ASCII dump, so samples are the "
+                               f"UnifiedSampleSeries {uprof_session.TIMER_EVENT_NAME} counts"))
+    elif dump is None:
         if sampler.pmc_cycle_shares:
             share = ("sample_share is the busy core-cycle share (fixed cycles per sample; "
                      "halted excluded)")
@@ -1326,7 +1377,10 @@ def _header_fields(args: argparse.Namespace, sampler: uprof_session.Sampler,
             fields.append(("TAG_TO_RETIRE_SHARE", "not applicable; this export has no "
                                                   "tag-to-retire counter, so "
                                                   "tag_to_retire_share is omitted"))
-    if dump is None:
+    if sampler.timer:
+        weights = ("timer sample counts from UnifiedSampleSeries; sample_share is the on-CPU "
+                   "time share")
+    elif dump is None:
         if sampler.pmc_cycle_shares:
             weights = ("PMC sample counts from UnifiedSampleSeries; sample_share is the busy "
                        "core-cycle share")
@@ -1397,9 +1451,78 @@ def _capture_scan(connection: object,
     return samples, contexts, (None if not check_kernel else bool(rows[0][2]))
 
 
+# A timer capture's UnifiedSampleSeries.windowId counts milliseconds from the capture start: a
+# translate --time-filter 0:1 keeps windows up to 1000, and a busy thread's window span matches
+# its measured run time at both 1 ms and 10 ms intervals.
+_TIMER_WINDOW_NS: Final = 1_000_000
+
+
+def _timer_contexts(connection: object,
+                    sampler: uprof_session.Sampler) -> list[uprof_session.ContextCadence]:
+    """Per-thread sample counts and the median gap between a thread's sampled windows.
+
+    A thread is (processId, threadId); gaps above the run-gap limit are time the thread was not
+    running and are left out of the median, as for a dump's DeltaTick gaps.
+    """
+    column = sampler.event_column or ""
+    if not column.startswith("event#0x") or not all(c in "0123456789abcdef"
+                                                    for c in column[len("event#0x"):]):
+        return []
+    limit_ns = uprof_session.run_gap_limit_ns(sampler)
+    limit = "NULL" if limit_ns is None else str(int(limit_ns // _TIMER_WINDOW_NS))
+    rows = connection.sql(
+        f'''WITH w AS (
+              SELECT processId AS p, threadId AS t, windowId AS win,
+                     sum("{column}") AS n
+              FROM UnifiedSampleSeries GROUP BY ALL),
+            g AS (
+              SELECT p, t, n,
+                     win - lag(win) OVER (PARTITION BY p, t ORDER BY win) AS gap
+              FROM w)
+            SELECT CAST(sum(n) AS BIGINT),
+                   median(gap) FILTER (WHERE gap > 0 AND ({limit} IS NULL OR gap <= {limit}))
+            FROM g GROUP BY p, t''').fetchall()
+    return [uprof_session.ContextCadence(
+        int(samples or 0), None if gap is None else float(gap) * _TIMER_WINDOW_NS)
+        for samples, gap in rows]
+
+
+# Below this many scoped samples the normal approximation of a share's interval is not stated.
+_PRECISION_MIN_SAMPLES: Final = 30
+
+
+def _top_row_precision(connection: object, by: str) -> str | None:
+    """The first row's share with its 95% binomial interval, h = 1.96 * sqrt(p(1-p)/n).
+
+    n is the scoped sample count. At p = 0 or 1, or below the minimum n, the interval is not
+    stated because the normal approximation does not hold there.
+    """
+    keys = {"process": ("process",), "module": ("module",), "function": ("function",),
+            "line": ("file", "line"), "instruction": ("module", "rva"),
+            "region": ("module", "page_start")}[by]
+    selected = ", ".join(f'"{key}"' for key in keys)
+    rows = connection.sql(f"SELECT {selected}, samples, total_samples FROM v_{by}_rows "
+                          "WHERE rn = 1").fetchall()
+    if not rows or not rows[0][-1]:
+        return None
+    parts = [f"0x{value:X}" if isinstance(value, int) and key in ("rva", "page_start")
+             else ("<unresolved>" if value is None else str(value))
+             for key, value in zip(keys, rows[0])]
+    name = ":".join(parts) if by == "line" else " ".join(parts)
+    samples, total = int(rows[0][-2] or 0), int(rows[0][-1])
+    share = samples / total
+    if total < _PRECISION_MIN_SAMPLES or share in (0.0, 1.0):
+        return f"top row {name} {100.0 * share:.1f}% (n={total}; no interval)"
+    half = 1.96 * math.sqrt(share * (1.0 - share) / total)
+    return (f"top row {name} {100.0 * share:.1f}% ±{100.0 * half:.1f} points "
+            f"(95% binomial, n={total})")
+
+
 def _achieved_field(connection: object, has_dump: bool, args: argparse.Namespace,
                     sampler: uprof_session.Sampler, dump: uprof_dump.DumpInfo | None,
-                    check_kernel: bool = False) -> tuple[tuple[str, str], int, bool | None]:
+                    check_kernel: bool = False,
+                    timer_contexts: list[uprof_session.ContextCadence] | None = None,
+                    ) -> tuple[tuple[str, str], int, bool | None]:
     """The achieved sampling rate over the whole capture, independent of the scope filter.
 
     The same scan returns the whole-capture sample count and, when check_kernel is set, whether
@@ -1420,6 +1543,10 @@ def _achieved_field(connection: object, has_dump: bool, args: argparse.Namespace
             bounds = util.parse_time_filter(dump.time_filter)
             if bounds is not None:
                 window_s = float(bounds[1] - bounds[0])
+    elif sampler.timer:
+        contexts = timer_contexts if timer_contexts is not None else _timer_contexts(
+            connection, sampler)
+        label = "thread"
     else:
         # PMC carries no per-sample timestamps, so a core's samples/s is its whole cadence.
         per_core = connection.sql(
@@ -1847,7 +1974,25 @@ def run_query_command(args: argparse.Namespace) -> None:
     time_start, time_end = _time_range(args)
     sampler = uprof_session.derive_sampler(session)
     system_wide = uprof_session.system_wide(session)
-    if sampler.pmc:
+    if sampler.timer:
+        if args.time_filter:
+            raise uprof_native.failure(
+                "--time-filter applies to IBS dump captures; a timer capture is windowed at "
+                "translate time", ["timer window", "whole capture"], session=session)
+        connection = uprof_db.connect(cpu_db)
+        try:
+            found = connection.execute(
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = "
+                "'UnifiedSampleSeries' AND column_name = ?", [sampler.event_column]).fetchall()
+        finally:
+            connection.close()
+        if not found or not found[0][0]:
+            raise uprof_native.failure(
+                f"cpu.db UnifiedSampleSeries has no {sampler.event_column} column, the "
+                f"{uprof_session.TIMER_EVENT_NAME} samples session.uprof records",
+                ["translate without dump"], session=session)
+        dump = None
+    elif sampler.pmc:
         if args.time_filter:
             raise util.UprofError(
                 "--time-filter cannot be applied to a PMC capture: this export aggregates PMC "
@@ -1990,20 +2135,23 @@ def run_query_command(args: argparse.Namespace) -> None:
                              and _tag_nonzero(connection) > 0)
             uprof_db.set_variables(connection, {
                 "uprof_tag_available": "true" if tag_available else "false"})
+            timer_contexts = (_timer_contexts(connection, sampler) if sampler.timer else None)
             legend = _legend(sampler, dump, has_tag, tag_available, args, system_wide,
                              sample_interval_s, has_system_module, range_info, row_attribution,
                              function_scope)
             fields = _header_fields(args, sampler, dump, has_tag, tag_available, system_wide)
+            top_row = _top_row_precision(connection, args.by) if sampler.timer else None
             # The filter and its parent measurement precede the reading rule; both sit directly
             # below METRIC, after VERSION, before the detailed fields.
-            fields[2:2] = _legend_fields(legend, system_wide)
+            fields[2:2] = _legend_fields(legend, system_wide, sampler.timer, top_row)
             if function_scope is not None:
-                fields[2:2] = _function_scope_fields(function_scope, legend, sample_interval_s)
+                fields[2:2] = _function_scope_fields(function_scope, legend, sample_interval_s,
+                                                     sampler.timer)
             if sanity_message:
                 fields.append(("SANITY", sanity_message))
             check_kernel = sampler.os_requested and not dump_windowed
             achieved, captured_samples, kernel_covered = _achieved_field(
-                connection, dump is not None, args, sampler, dump, check_kernel)
+                connection, dump is not None, args, sampler, dump, check_kernel, timer_contexts)
             if achieved:
                 fields.append(achieved)
             fields.extend(_kernel_coverage_field(

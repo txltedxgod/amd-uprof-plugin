@@ -101,6 +101,47 @@ def require_uprof() -> Path:
     return found
 
 
+def _shell_arg(text: str) -> str:
+    """One argument as a shell would need it: double-quoted unless it is plain."""
+    if text and all(char.isalnum() or char in "._-/:\\+,<>|" for char in text):
+        return text
+    return '"' + text.replace('"', '\\"') + '"'
+
+
+def failure(cause: str, labels: Iterable[str], *, session: str | os.PathLike[str] | None = None,
+            pids: Sequence[int] | None = None, seconds: float | None = None) -> UprofError:
+    """An unsupported case: the cause, then one runnable ALTERNATIVE line per applicable option.
+
+    The tool never switches capture or analysis mode on its own, so the caller chooses. Lines are
+    sorted by label without a default; each chain is complete, fills in what is known (the
+    resolved AMDuProfCLI, this skill's uprof.py, the session, PIDs, duration) and keeps the rest
+    as <PLACEHOLDER>. A chain is the same text wherever the same option is offered.
+    """
+    cli = _shell_arg(os.fspath(find_uprof() or "<AMDUPROFCLI>"))
+    tool = "python " + _shell_arg(os.fspath(Path(__file__).resolve().parent / "uprof.py"))
+    known = _shell_arg(os.fspath(absolute(session))) if session else "<SESSION_DIR>"
+    pid = ",".join(str(value) for value in pids) if pids else "<PID>"
+    duration = f"{seconds:g}" if seconds else "<S>"
+    then = (f"; {tool} translate --session <NEW_OUT_DIR> --out-dir <NEW_TR_DIR>; "
+            f"{tool} profile --session <NEW_TR_DIR> --by process")
+    chains = {
+        "timer capture": (f"{cli} collect --config tbp -d {duration} -o <NEW_OUT_DIR> -p {pid}"
+                          + then),
+        "timer capture (launch)": f"{cli} collect --config tbp -o <NEW_OUT_DIR> <APP>" + then,
+        "timer window": (f"{tool} translate --session {known} --out-dir <NEW_TR_DIR> "
+                         f"--time-filter <T1>:<T2>; {tool} profile --session <NEW_TR_DIR> "
+                         "--by process"),
+        "translate without dump": (f"{tool} translate --session {known} --out-dir <NEW_TR_DIR>; "
+                                   f"{tool} profile --session <NEW_TR_DIR> --by process"),
+        "whole capture": f"{tool} profile --session {known} --by process",
+        "Zen host": (f"{tool} collect --out-dir <NEW_OUT_DIR> --seconds {duration} --process "
+                     f"{pid} --event <ibs-op|cycles>" + then),
+    }
+    lines = [cause] + [f"ALTERNATIVE: {label}: {chains[label]}"
+                       for label in sorted(set(labels), key=str.lower)]
+    return UprofError("\n".join(lines))
+
+
 def require_symbolizer() -> Path:
     found = find_symbolizer()
     if not found:
@@ -510,6 +551,9 @@ def translate(session_dir: Path | str, out_dir: Path | str,
     if ascii_kind and ascii_kind not in DUMP_FILENAMES:
         raise UprofError(f"unknown --ascii kind {ascii_kind!r}; use ibsop-event-dump or "
                          "ibsfetch-event-dump")
+    if ascii_kind and derive_sampler(session).timer:
+        raise failure("a timer capture has no IBS sample dump",
+                      ["translate without dump"], session=session)
 
     env_cache, env_servers = parse_symbol_path(os.environ.get("_NT_SYMBOL_PATH"))
     cache = symbol_cache or env_cache or symbol_cache_dir()
