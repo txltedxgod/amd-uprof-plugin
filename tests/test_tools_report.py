@@ -23,7 +23,7 @@ def report(siblings: dict[str, Path | None]) -> list[str]:
             mock.patch.object(uprof_native, "find_sibling",
                               side_effect=lambda symbolizer, name: siblings.get(name)), \
             mock.patch.object(uprof_native, "_first_version_line", return_value="LLVM version 23.1.4"), \
-            mock.patch.object(uprof_native, "_uprof_version", return_value="5.1"), \
+            mock.patch.object(uprof_native, "_uprof_version", return_value="AMDuProfCLI.exe Version 5.3.521.0"), \
             mock.patch.dict("sys.modules", duckdb=types.SimpleNamespace(__version__="2.0.0")), \
             contextlib.redirect_stdout(out):
         uprof_native.tool_report()
@@ -34,7 +34,7 @@ class ToolsReportTest(unittest.TestCase):
     def test_a_found_objdump_prints_its_path_and_version(self):
         objdump = Path("/llvm/bin/llvm-objdump")
         rows = report({"llvm-objdump": objdump})
-        self.assertIn(f"OBJDUMP={objdump}; version=LLVM version 23.1.4", rows)
+        self.assertIn(f"OBJDUMP={objdump}; version=LLVM version 23.1.4; minimum=23; ok", rows)
 
     def test_a_missing_objdump_prints_the_cause_and_remedy_without_failing(self):
         rows = report({})
