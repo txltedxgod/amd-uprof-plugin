@@ -66,7 +66,7 @@ class OutFileGuardTest(unittest.TestCase):
             target.write_bytes(b"rebuilt")
             return target
 
-        sampler = types.SimpleNamespace(pmc=False, event_column="")
+        sampler = types.SimpleNamespace(pmc=False, timer=False, event_column="")
         dump = uprof_dump.DumpInfo(self.dump, "beside", self.cache)
         with mock.patch.object(uprof_session, "derive_sampler", return_value=sampler), \
                 mock.patch.object(uprof_session, "system_wide", return_value=True), \
