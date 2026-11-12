@@ -27,11 +27,11 @@ def meta() -> dict:
 
 
 def build(session: Path, meta_override: dict | None = None,
-          drop_columns: tuple[str, ...] = ()) -> Path:
+          drop_columns: tuple[str, ...] = (), keep_rows: int | None = None) -> Path:
     """Write the fixture session into session (created); return it.
 
     meta_override replaces session.uprof; drop_columns leaves those UnifiedSampleSeries columns
-    out of cpu.db.
+    out of cpu.db; keep_rows keeps only that many UnifiedSampleSeries rows.
     """
     import duckdb
 
@@ -48,7 +48,10 @@ def build(session: Path, meta_override: dict | None = None,
             columns = ", ".join(f'"{table["columns"][i][0]}" {table["columns"][i][1]}'
                                 for i in keep)
             connection.execute(f'CREATE TABLE "{name}" ({columns})')
-            rows = [[row[i] for i in keep] for row in table["rows"]]
+            source = table["rows"]
+            if name == "UnifiedSampleSeries" and keep_rows is not None:
+                source = source[:keep_rows]
+            rows = [[row[i] for i in keep] for row in source]
             if rows:
                 marks = ", ".join("?" for _ in keep)
                 connection.executemany(f'INSERT INTO "{name}" VALUES ({marks})', rows)

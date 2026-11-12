@@ -229,6 +229,8 @@ class TimerOutputTest(_Session):
         self.assertEqual(header.count("time_share absent"), 0, header)
         self.assertEqual(header.count("tag_to_retire_share absent"), 0, header)
         self.assertEqual(header.count("tag_to_retire_share"), 1, header)
+        # time_share appears once in METRIC; parent_time_share is not a timer column.
+        self.assertEqual(len(re.findall(r"(?<![a-z_])time_share", header)), 1, header)
 
     def test_columns_and_ordering(self):
         document = self.document("module")
@@ -250,13 +252,32 @@ class TimerOutputTest(_Session):
                       absent["cpu_seconds"])
 
     def test_no_pmc_or_cycle_wording_in_timer_output(self):
-        for by in ("process", "module"):
+        reason = _symbolizer_skip()
+        if reason:
+            self.skipTest(reason)
+        scoped = ("--function", HASH_NAME, "--module", timer_fixture.IMAGE_KEY)
+        views = [(by, ()) for by in ("process", "module", "function", "region", "line",
+                                     "instruction")]
+        views += [("line", scoped), ("instruction", scoped)]
+        for by, scope in views:
             for extra in ((), ("--json",)):
-                with self.subTest(by=by, json=bool(extra)):
-                    text = self.profile(by, *extra)
-                    for banned in ("PMC", "core-cycle", "time-based", "Time-based Sampling",
-                                   "configName", "--event ibs-op", "--event cycles"):
+                with self.subTest(by=by, scoped=bool(scope), json=bool(extra)):
+                    text = self.symbolized(by, *scope, *extra)
+                    for banned in ("PMC", "core-cycle", "cycles were spent", "time-based",
+                                   "Time-based Sampling", "configName", "--event ibs-op",
+                                   "--event cycles", "not applicable"):
                         self.assertNotIn(banned, text)
+
+    def test_scoped_parent_states_the_timer_cpu_seconds_cause(self):
+        reason = _symbolizer_skip()
+        if reason:
+            self.skipTest(reason)
+        for by in ("line", "instruction"):
+            with self.subTest(by=by):
+                text = self.symbolized(by, "--function", HASH_NAME,
+                                       "--module", timer_fixture.IMAGE_KEY)
+                parent = re.search(r"^PARENT: .*$", text, re.M).group(0)
+                self.assertIn("cpu_seconds absent (on the reference host", parent)
 
     def test_module_rows_keep_the_external_share(self):
         rows = {row["module"]: row for row in self.document("module")["rows"]}
@@ -286,6 +307,11 @@ class TimerOutputTest(_Session):
         read = re.search(r"^READ: .*$", self.profile("module"), re.M).group(0)
         self.assertTrue(read.endswith(expected), read)
         self.assertIn("72.8% ±2.3 points", expected)
+
+    def test_read_states_no_interval_below_thirty_samples(self):
+        session = timer_fixture.build(self.root / "small", keep_rows=20)
+        read = re.search(r"^READ: .*$", self.profile("module", session=session), re.M).group(0)
+        self.assertRegex(read, r"top row \S+ \d+\.\d% \(n=(\d|1\d|2\d); no interval\)$")
 
     def test_read_states_no_interval_for_a_whole_share(self):
         read = re.search(r"^READ: .*$", self.profile("process"), re.M).group(0)
@@ -414,10 +440,16 @@ class CollectRejectionTest(unittest.TestCase):
                     "AMDuProfCLI rejected CYCLES_NOT_IN_HALT: ERROR: Invalid event"), text)
                 self.assertEqual(_labels(text), ["timer capture", "timer capture (launch)",
                                                  "whole capture", "Zen host"])
-                timer = _alternatives(text)[0]
-                self.assertIn("collect --config tbp -d 5 -o <NEW_OUT_DIR> -p 4242", timer)
                 for line in _alternatives(text)[:3]:
                     self.assertNotIn("--event", line)
+                # The same option is the same text wherever it is offered.
+                with mock.patch.object(uprof_native, "find_uprof", return_value=Path(FAKE_CLI)):
+                    no_sampler = str(uprof_native.failure(
+                        "x", ["timer capture", "timer capture (launch)", "Zen host"]))
+                shared = [line for line in _alternatives(text)
+                          if not line.startswith("ALTERNATIVE: whole capture: ")]
+                self.assertEqual(shared, _alternatives(no_sampler))
+                self.assertIn("collect --config tbp -d <S> -o <NEW_OUT_DIR> -p <PID>", shared[0])
 
 
 if __name__ == "__main__":
