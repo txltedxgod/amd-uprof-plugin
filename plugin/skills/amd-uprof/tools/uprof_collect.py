@@ -292,7 +292,7 @@ def collect(options: CollectOptions) -> None:
             # No other sampler is started on this host's behalf; the caller picks one.
             raise failure(f"AMDuProfCLI rejected CYCLES_NOT_IN_HALT: {detail}",
                           ["timer capture", "timer capture (launch)", "whole capture",
-                           "Zen host"], pids=options.pids, seconds=options.seconds)
+                           "Zen host"])
         raise UprofError(f"collect failed with {completed.returncode}: {detail}")
 
     session = _one_session(out_dir, session_before, children_before)

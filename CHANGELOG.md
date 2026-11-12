@@ -6,13 +6,13 @@ All notable changes to this plugin. Format: Keep a Changelog; versioning: SemVer
 
 ### Added
 
-- 2.2.0: timer captures are profiled as an on-CPU time share; unsupported cases fail
-  with a cause and proposed alternatives. A timer-based capture (`AMDuProfCLI collect --config
+- Timer captures are profiled as an on-CPU time share; unsupported cases fail with a cause
+  and proposed alternatives. A timer-based capture (`AMDuProfCLI collect --config
   tbp`, the only sampler on hosts without IBS or `CYCLES_NOT_IN_HALT`) is detected from its
   `CPU_TIME` event column; every `profile --by` view reads it, `METRIC` names the measures it
   lacks once, `READ` carries the top row's 95% binomial interval, and `ACHIEVED` reports per
-  thread. `cpu_seconds` is not derived: timer ticks undercounted measured CPU time by up to 13%
-  at 1 ms and 31% at 10 ms. `profile --time-filter` and `translate --ascii` on a timer capture,
+  thread. `cpu_seconds` is not derived: on the reference host, samples × interval was 13% low
+  to 0.2% high at 1 ms and 31% to 12% low at 10 ms against measured CPU time. `profile --time-filter` and `translate --ascii` on a timer capture,
   a session with no recognized sampler, and a `collect` whose `CYCLES_NOT_IN_HALT` AMDuProfCLI
   rejects now exit 2 with `error: <cause>` and one runnable `ALTERNATIVE:` line per option;
   nothing switches mode on its own (issue #190).

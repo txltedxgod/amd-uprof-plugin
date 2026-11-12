@@ -26,7 +26,8 @@ class Sampler:
     ibs_dump_kind is a DUMP_FILENAMES key when an IBS ASCII dump exists; metric is the METRIC
     line printed before query results. pmc marks a capture whose samples come from cpu.db rather
     than a dump (a PMC capture, or a timer capture with timer set); event_column names its sample
-    column in UnifiedSampleSeries.
+    column in UnifiedSampleSeries. A timer capture's interval is interval_ms (interval_units
+    'ms'); one timer sample is one tick that found the thread running.
     os_requested is the applied event's OS-mode bit; an unelevated capture that requests it has no
     kernel-image samples, which kernel_coverage_warning checks. os_mode names the bit that carried
     the request (os, opOs or fetchOs) for the warning text. pmc_cycle_shares is true only for a
@@ -40,13 +41,13 @@ class Sampler:
     pmc_cycle_shares: bool = False
     event_column: str | None = None
     interval: int | None = None
-    interval_units: str | None = None  # 'cycles' (time-convertible), 'ops' or 'fetch' (not)
+    # 'cycles' (time-convertible), 'ms' (timer, interval_ms), 'ops' or 'fetch' (not time)
+    interval_units: str | None = None
     os_requested: bool = False
     os_mode: str | None = None
     # A timer capture reads cpu.db like PMC (pmc is set too); its interval is milliseconds.
     timer: bool = False
     interval_ms: float | None = None
-    system_wide: bool = False
 
 
 @dataclass
@@ -264,7 +265,7 @@ def _timer_sampler(meta: dict[str, Any]) -> Sampler | None:
               "time_share, tag_to_retire_share, cycle cost, per-op cost, caller attribution into "
               "external modules")
     return Sampler(metric=metric, pmc=True, event_column=column, interval_units="ms",
-                   timer=True, interval_ms=interval_ms, system_wide=wide)
+                   timer=True, interval_ms=interval_ms)
 
 
 def kernel_coverage_warning(sampler: Sampler, has_kernel_samples: bool,

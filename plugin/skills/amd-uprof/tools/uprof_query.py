@@ -572,8 +572,8 @@ _TIMER_SHARE_MEANING: Final = (
     "on-CPU time share of the sampled threads (one sample per timer tick that found the thread "
     "running)")
 _TIMER_CPU_SECONDS_ABSENT: Final = (
-    "timer ticks undercount CPU time (samples x interval was 0-13% low at 1 ms and 12-31% low at "
-    "10 ms against the workload's own CPU time), so no seconds are derived; for a cost in "
+    "on the reference host, samples x interval was 13% low to 0.2% high at 1 ms and 31% to 12% "
+    "low at 10 ms against the workload's own CPU time, so no seconds are derived; for a cost in "
     "seconds, multiply sample_share by the workload's measured CPU time")
 _TIMER_ABSENT_TIME_SHARE: Final = "a timer capture has no per-sample timestamps"
 _TIMER_ABSENT_TAG: Final = "a timer capture has no tag-to-retire counter"
@@ -901,7 +901,8 @@ def _function_scope_fields(scope: dict[str, Any], legend: dict[str, Any],
         seconds = float(scope["samples"]) * sample_interval_s
         parent.append(f"cpu_seconds {seconds:.3f} s (parent samples x interval)")
     else:
-        parent.append(f"cpu_seconds absent ({absent.get('cpu_seconds', 'not applicable')})")
+        default = _TIMER_CPU_SECONDS_ABSENT if timer else "not applicable"
+        parent.append(f"cpu_seconds absent ({absent.get('cpu_seconds', default)})")
     shares = ("child sample_share uses the capture denominator, parent_sample_share uses the "
               "parent totals" if timer else
               "child sample_share/time_share/tag_to_retire_share use the capture denominators, "
@@ -1212,6 +1213,8 @@ def _read_text(legend: dict[str, Any], system_wide: bool) -> str:
                 read += f"; {_SAMPLE_CAVEAT}"
         if "tag_to_retire_share" in legend["columns"]:
             read += "; tag_to_retire_share is total tag-to-retire cycles (higher = more wait)"
+    elif sample == _TIMER_SHARE_MEANING:
+        read = f"sample_share orders the rows: {sample}"
     elif sample.startswith("not established"):
         read = ("sample_share is not established for this event; rows are ordered by raw sample "
                 "count only, not a time or impact claim")

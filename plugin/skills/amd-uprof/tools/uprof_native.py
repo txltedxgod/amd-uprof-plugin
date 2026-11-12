@@ -102,30 +102,34 @@ def require_uprof() -> Path:
 
 
 def _shell_arg(text: str) -> str:
-    """One argument as a shell would need it: double-quoted unless it is plain."""
-    if text and all(char.isalnum() or char in "._-/:\\+,<>|" for char in text):
+    """One argument as a shell would need it: double-quoted unless it is plain.
+
+    On Windows a % is doubled so cmd.exe does not expand %NAME%.
+    """
+    if IS_WINDOWS:
+        text = text.replace("%", "%%")
+    if text and all(char.isalnum() or char in "._-/:\\+," for char in text):
         return text
     return '"' + text.replace('"', '\\"') + '"'
 
 
-def failure(cause: str, labels: Iterable[str], *, session: str | os.PathLike[str] | None = None,
-            pids: Sequence[int] | None = None, seconds: float | None = None) -> UprofError:
+def failure(cause: str, labels: Iterable[str], *,
+            session: str | os.PathLike[str] | None = None) -> UprofError:
     """An unsupported case: the cause, then one runnable ALTERNATIVE line per applicable option.
 
     The tool never switches capture or analysis mode on its own, so the caller chooses. Lines are
-    sorted by label without a default; each chain is complete, fills in what is known (the
-    resolved AMDuProfCLI, this skill's uprof.py, the session, PIDs, duration) and keeps the rest
-    as <PLACEHOLDER>. A chain is the same text wherever the same option is offered.
+    sorted by label without a default; each chain is complete, fills in only the resolved
+    AMDuProfCLI, this skill's uprof.py and the failing session, and keeps the rest as
+    <PLACEHOLDER>, so an option is the same text wherever it is offered.
     """
-    cli = _shell_arg(os.fspath(find_uprof() or "<AMDUPROFCLI>"))
+    found = find_uprof()
+    cli = _shell_arg(os.fspath(found)) if found else '"<AMDUPROFCLI>"'
     tool = "python " + _shell_arg(os.fspath(Path(__file__).resolve().parent / "uprof.py"))
     known = _shell_arg(os.fspath(absolute(session))) if session else "<SESSION_DIR>"
-    pid = ",".join(str(value) for value in pids) if pids else "<PID>"
-    duration = f"{seconds:g}" if seconds else "<S>"
     then = (f"; {tool} translate --session <NEW_OUT_DIR> --out-dir <NEW_TR_DIR>; "
             f"{tool} profile --session <NEW_TR_DIR> --by process")
     chains = {
-        "timer capture": (f"{cli} collect --config tbp -d {duration} -o <NEW_OUT_DIR> -p {pid}"
+        "timer capture": (f"{cli} collect --config tbp -d <S> -o <NEW_OUT_DIR> -p <PID>"
                           + then),
         "timer capture (launch)": f"{cli} collect --config tbp -o <NEW_OUT_DIR> <APP>" + then,
         "timer window": (f"{tool} translate --session {known} --out-dir <NEW_TR_DIR> "
@@ -134,8 +138,8 @@ def failure(cause: str, labels: Iterable[str], *, session: str | os.PathLike[str
         "translate without dump": (f"{tool} translate --session {known} --out-dir <NEW_TR_DIR>; "
                                    f"{tool} profile --session <NEW_TR_DIR> --by process"),
         "whole capture": f"{tool} profile --session {known} --by process",
-        "Zen host": (f"{tool} collect --out-dir <NEW_OUT_DIR> --seconds {duration} --process "
-                     f"{pid} --event <ibs-op|cycles>" + then),
+        "Zen host": (f"{tool} collect --out-dir <NEW_OUT_DIR> --seconds <S> --process <PID> "
+                     "--event <ibs-op|cycles>" + then),
     }
     lines = [cause] + [f"ALTERNATIVE: {label}: {chains[label]}"
                        for label in sorted(set(labels), key=str.lower)]
