@@ -1,0 +1,87 @@
+{
+ "collectCommand": "AMDuProfCLI.exe collect --config tbp -o <OUT_DIR> heap_churn.exe",
+ "collection": {
+  "events": {
+   "configName": "Time-based Sampling",
+   "ibsEvents": {
+    "cacheAnalysis": false,
+    "fetch": false,
+    "fetchCallstack": true,
+    "fetchInterval": 0,
+    "fetchL3Miss": false,
+    "fetchLoadLatency": 0,
+    "fetchOs": true,
+    "fetchUser": true,
+    "loadStoreOnly": false,
+    "op": false,
+    "opCallstack": true,
+    "opCycleCount": false,
+    "opInterval": 0,
+    "opL3Miss": false,
+    "opLoadLatency": 0,
+    "opOs": true,
+    "opStreamStore": false,
+    "opUser": true,
+    "randomize": true
+   },
+   "pmcEvents": null,
+   "timerInterval": 1.0,
+   "timerSamplingMode": 1
+  },
+  "schedule": {
+   "elapsed": 2644,
+   "start": 111970264872400,
+   "end": 111972908087900,
+   "startTs": "Thu Nov 12 14:09:50 2026",
+   "endTs": "Thu Nov 12 14:09:53 2026",
+   "profileDuration": 0
+  },
+  "target": {
+   "systemWide": false,
+   "launchApp": "heap_churn.exe"
+  }
+ },
+ "auxiliary": {
+  "eventColumnIds": [
+   {
+    "category": 1,
+    "categoryName": "CPU PROFILE",
+    "events": [
+     {
+      "callstack": true,
+      "category": 1,
+      "cmask": 0,
+      "description": "CPU Time is the time in which the CPU core is executing the code.",
+      "encodedId": 562949953478656,
+      "eventCategory": 2,
+      "expression": "",
+      "fetchL3MissOnly": false,
+      "fetchLoadLatency": false,
+      "frequency": 0,
+      "hwEventId": 57344,
+      "interval": 1,
+      "invCmask": false,
+      "isFrequencyMode": false,
+      "isRawEvent": true,
+      "isTimeSeriesData": true,
+      "name": "CPU_TIME",
+      "opDispatchedCount": false,
+      "opL3MissOnly": false,
+      "opLoadLatency": false,
+      "opStreamStore": false,
+      "osMode": false,
+      "samples": 0,
+      "smcSource": 0,
+      "threshold": 0,
+      "traceMode": 0,
+      "unit": "",
+      "unitMask": 0,
+      "usrMode": false
+     }
+    ]
+   }
+  ],
+  "ibsOpSampling": false,
+  "cores": 12
+ }
+}
