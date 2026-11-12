@@ -30,6 +30,7 @@ import uprof_symbols
 from uprof_context import find_readobj
 from uprof_native import (IS_WINDOWS, default_symbol_servers, find_sibling, find_symbolizer,
                           symbol_cache_dir)
+from uprof_util import contains
 
 TOOLS_DIR: Final = Path(os.path.abspath(__file__)).parent
 
@@ -38,6 +39,8 @@ SCHEMA_VERSION = 3
 # The only files the cache owns in its root: cache_db_path names and their quarantined copies.
 _CACHE_NAME = re.compile(r"[0-9a-f]{32}\.duckdb")
 _CORRUPT_NAME = re.compile(r"[0-9a-f]{32}\.duckdb\.corrupt")
+# Everything the session cache writes into its root: databases, WAL and temp files, corrupt copies.
+_OWN_ENTRY = re.compile(r"[0-9a-f]{32}\.duckdb(\..*)?", re.IGNORECASE)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -125,32 +128,59 @@ def _files_in(directory: Path, names: set[str] | None = None,
     return result
 
 
-def _dir_listing(path: Path, limit: int = 1024) -> list[object]:
-    """A directory's mtime and child names; a newly staged PDB changes the names."""
+def _dir_listing(path: Path, limit: int = 1024, holds_own: bool = False) -> list[object]:
+    """A directory's mtime and child names; a newly staged PDB changes the names.
+
+    holds_own marks a directory the session cache writes into: its own entries are left out and
+    its mtime is not used, since storing a result must not change the key it is stored under.
+    """
     try:
         with os.scandir(path) as entries:
-            names = sorted(entry.name for entry in entries)[:limit]
-        return [str(path), Path(path).stat().st_mtime_ns, names]
+            names = sorted(entry.name for entry in entries
+                           if not (holds_own and _OWN_ENTRY.fullmatch(entry.name)))[:limit]
+        return [str(path), None if holds_own else Path(path).stat().st_mtime_ns, names]
     except OSError:
         return [str(path), None, []]
 
 
 def _srv_caches() -> list[list[object]]:
-    """The cache directories named by _NT_SYMBOL_PATH srv* entries and their child listings."""
+    """The cache directories named by _NT_SYMBOL_PATH srv* entries and their child listings.
+
+    The session cache root may lie inside such a cache (the default one does); it is listed
+    without the session cache's own files.
+    """
+    own = cache_root()
+    try:
+        own_stat = own.stat()
+    except OSError:
+        own_stat = None
     result: list[list[object]] = []
     for entry in os.environ.get("_NT_SYMBOL_PATH", "").split(";"):
         parts = entry.split("*")
         if len(parts) < 2 or parts[0].strip().lower() != "srv" or not parts[1].strip():
             continue
         root = Path(parts[1].strip())
-        result.append(_dir_listing(root))
+        root_is_own = own_stat is not None and contains(own, root)
+        result.append(_dir_listing(root, holds_own=root_is_own))
         try:
             for child in sorted(root.iterdir())[:256]:
+                if root_is_own and _OWN_ENTRY.fullmatch(child.name):
+                    continue
                 if child.is_dir():
-                    result.append(_dir_listing(child, 64))
+                    is_own = root_is_own or _same_dir(child, own_stat)
+                    result.append(_dir_listing(child, 64, holds_own=is_own))
         except OSError:
             pass
     return result
+
+
+def _same_dir(path: Path, other: os.stat_result | None) -> bool:
+    if other is None:
+        return False
+    try:
+        return os.path.samestat(path.stat(), other)
+    except OSError:
+        return False
 
 
 def search_identity(symbol_path: list[str] | None, image_path: list[str] | None,
