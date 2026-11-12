@@ -192,6 +192,19 @@ class OutFileGuardTest(unittest.TestCase):
         link = self._junction(self.cache)
         self._assert_refused(copy, out_file=str(link / copy.name))
 
+    def _assert_new_copy_refused(self, out_file):
+        copy = self.cache / "IbsOpDump.samples.parquet"
+        with self.assertRaisesRegex(uprof_util.UprofError, _OVERWRITE):
+            self._run("--out-file", out_file)
+        self.assertFalse(copy.exists())
+
+    def test_a_parquet_copy_not_built_yet_through_a_junction_is_protected(self):
+        self._assert_new_copy_refused(
+            str(self._junction(self.cache) / "IbsOpDump.samples.parquet"))
+
+    def test_a_parquet_copy_not_built_yet_through_a_unc_path_is_protected(self):
+        self._assert_new_copy_refused(self._unc(self.cache / "IbsOpDump.samples.parquet"))
+
     def test_the_parquet_unsupported_marker_is_protected(self):
         marker = self.cache / "IbsOpDump.samples.parquet.unsupported.json"
         marker.write_text("{}", encoding="utf-8")
